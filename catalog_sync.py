@@ -4,6 +4,9 @@ catalog_sync.py
 Notion DB に添付されたカタログPDFを検知し、
 SSH(SFTP)経由でレンタルサーバーに自動転送して公開URLをNotionに書き戻す。
 
+Render の無料 Web Service として動作します。
+14分おきに /ping エンドポイントを叩くことでスリープを防止してください。
+
 ■ Render の Environment Variables に以下を設定してください:
   NOTION_TOKEN      : Notion Integration のシークレットトークン
   NOTION_DB_ID      : カタログDBのID（URLの末尾32文字）
@@ -25,10 +28,12 @@ SSH(SFTP)経由でレンタルサーバーに自動転送して公開URLをNotio
 import io
 import logging
 import os
+import threading
 import time
 
 import paramiko
 import requests
+from flask import Flask
 
 # ---------------------------------------------------------------------------
 # 設定（環境変数から読み込む）
@@ -201,7 +206,21 @@ def run_once() -> None:
     log.info("同期チェック完了")
 
 
-def main() -> None:
+# ---------------------------------------------------------------------------
+# Flask アプリ（Render のスリープ防止用 /ping エンドポイント）
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+
+@app.route("/")
+@app.route("/ping")
+def ping():
+    return "OK", 200
+
+
+# ---------------------------------------------------------------------------
+# バックグラウンドスレッドで同期ループを実行
+# ---------------------------------------------------------------------------
+def sync_loop() -> None:
     log.info("=" * 60)
     log.info("カタログ自動同期サービスを開始しました")
     log.info(f"  Notion DB : {NOTION_DB_ID}")
@@ -217,9 +236,15 @@ def main() -> None:
         except Exception as exc:
             log.error(f"予期しないエラーが発生しました: {exc}", exc_info=True)
 
-        log.info(f"{POLL_INTERVAL} 秒後に再チェックします...\n")
+        log.info(f"{POLL_INTERVAL} 秒後に再チェックします...")
         time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
-    main()
+    # 同期ループをバックグラウンドスレッドで起動
+    t = threading.Thread(target=sync_loop, daemon=True)
+    t.start()
+
+    # Flaskサーバーをメインスレッドで起動（Renderはポート10000を使用）
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
