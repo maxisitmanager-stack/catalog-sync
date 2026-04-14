@@ -141,8 +141,13 @@ def update_notion_page(page_id: str, public_url: str, status: str) -> None:
 
 def download_file(url: str) -> bytes:
     """指定URLからファイルをダウンロードする（Notionの署名付きURLに対応）"""
-    headers = NOTION_HEADERS if "secure.notion-static.com" in url or "prod-files-secure" in url else {}
-    resp = requests.get(url, headers=headers, timeout=60)
+    # S3の署名付きURLにはAuthorizationヘッダーを送らない
+    # （URLにAWS署名が含まれているため、Authorizationヘッダーを追加すると400エラーになる）
+    is_s3_presigned = "prod-files-secure.s3" in url or "secure.notion-static.com" in url or "s3.us-west-2.amazonaws.com" in url
+    if is_s3_presigned:
+        resp = requests.get(url, timeout=60)
+    else:
+        resp = requests.get(url, headers=NOTION_HEADERS, timeout=60)
     resp.raise_for_status()
     return resp.content
 
