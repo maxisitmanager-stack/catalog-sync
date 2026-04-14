@@ -1,0 +1,46 @@
+# render.yaml
+# Render にデプロイするための設定ファイル
+# GitHub リポジトリのルートに置いてください
+
+services:
+  - type: worker          # バックグラウンドワーカー（常時起動・無料プランはスリープあり）
+    name: catalog-sync
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python catalog_sync.py
+    plan: free            # 有料プランに変更すればスリープなし（starter: $7/月~）
+
+    envVars:
+      # ── Notion ──────────────────────────────────────────────
+      - key: NOTION_TOKEN
+        sync: false       # Render ダッシュボードで直接入力（コードには書かない）
+      - key: NOTION_DB_ID
+        value: "1a040e3f36c9807ebd20eb8367d7466d"   # 📑 DB_カタログ｜チラシ
+
+      # ── SSH サーバー ─────────────────────────────────────────
+      - key: SSH_HOST
+        sync: false
+      - key: SSH_PORT
+        value: "22"       # デフォルト。変更が必要なら上書き
+      - key: SSH_USER
+        sync: false
+      - key: SSH_PASSWORD
+        sync: false
+      - key: SSH_REMOTE_PATH
+        sync: false       # 例: /var/www/html/catalog
+      - key: PUBLIC_URL_BASE
+        sync: false       # 例: https://example.com/catalog
+
+      # ── 動作設定 ────────────────────────────────────────────
+      - key: POLL_INTERVAL
+        value: "300"      # 5分ごとにチェック（秒単位）
+
+      # ── Notion プロパティ名（DBに合わせて変更） ──────────────
+      - key: PROP_PDF_FILE
+        value: "カタログPDF"
+      - key: PROP_PUBLIC_URL
+        value: "公開URL"
+      - key: PROP_SYNC_STATUS
+        value: "同期ステータス"
+      - key: PROP_TITLE
+        value: "名称"    # DB_カタログ｜チラシ のタイトル列名
