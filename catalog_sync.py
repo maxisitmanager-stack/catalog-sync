@@ -2,7 +2,7 @@
 catalog_sync.py
 ===============
 Notion DB に添付されたカタログPDFを検知し、
-SSH(SFTP)経由でレンタルサーバーに自動転送して公開URLをNotionに書き戻す。
+FTP経由でレンタルサーバーに自動転送して公開URLをNotionに書き戻す。
 
 Render の無料 Web Service として動作します。
 14分おきに /ping エンドポイントを叩くことでスリープを防止してください。
@@ -11,13 +11,13 @@ Render の無料 Web Service として動作します。
   NOTION_TOKEN      : Notion Integration のシークレットトークン
   NOTION_DB_ID      : カタログDBのID（URLの末尾32文字）
   SSH_HOST          : サーバーのホスト名またはIPアドレス
-  SSH_USER          : SSHログインユーザー名
-  SSH_PASSWORD      : SSHパスワード
-  SSH_REMOTE_PATH   : アップロード先パス (例: /var/www/html/catalog)
+  SSH_USER          : FTPログインユーザー名
+  SSH_PASSWORD      : FTPパスワード
+  SSH_REMOTE_PATH   : アップロード先パス (例: /htdocs/catalog)
   PUBLIC_URL_BASE   : 公開URL のベース (例: https://example.com/catalog)
 
 ■ 任意の環境変数（デフォルト値あり）:
-  SSH_PORT          : SSHポート番号（デフォルト: 22）
+  SSH_PORT          : FTPポート番号（デフォルト: 21）
   POLL_INTERVAL     : チェック間隔（秒）（デフォルト: 300 = 5分）
   PROP_PDF_FILE     : PDF添付プロパティ名（デフォルト: カタログPDF）
   PROP_PUBLIC_URL   : URL書き戻しプロパティ名（デフォルト: 公開URL）
@@ -25,13 +25,13 @@ Render の無料 Web Service として動作します。
   PROP_TITLE        : タイトルプロパティ名（デフォルト: 名称）
 """
 
+import ftplib
 import io
 import logging
 import os
 import threading
 import time
 
-import paramiko
 import requests
 from flask import Flask
 
@@ -41,7 +41,7 @@ from flask import Flask
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 SSH_HOST        = os.environ["SSH_HOST"]
-SSH_PORT        = int(os.environ.get("SSH_PORT", "22"))
+SSH_PORT        = int(os.environ.get("SSH_PORT", "21"))
 SSH_USER        = os.environ["SSH_USER"]
 SSH_PASSWORD    = os.environ["SSH_PASSWORD"]
 SSH_REMOTE_PATH = os.environ["SSH_REMOTE_PATH"]   # 末尾スラッシュなし
@@ -149,7 +149,6 @@ def update_notion_page(page_id: str, public_url: str, status: str) -> None:
 def download_file(url: str) -> bytes:
     """指定URLからファイルをダウンロードする（Notionの署名付きURLに対応）"""
     # S3の署名付きURLにはAuthorizationヘッダーを送らない
-    # （URLにAWS署名が含まれているため、Authorizationヘッダーを追加すると400エラーになる）
     is_s3_presigned = "prod-files-secure.s3" in url or "secure.notion-static.com" in url or "s3.us-west-2.amazonaws.com" in url
     if is_s3_presigned:
         resp = requests.get(url, timeout=60)
@@ -159,17 +158,20 @@ def download_file(url: str) -> bytes:
     return resp.content
 
 
-def upload_via_sftp(data: bytes, filename: str) -> str:
-    """SFTPでサーバーにアップロードし、公開URLを返す"""
-    transport = paramiko.Transport((SSH_HOST, SSH_PORT))
+def upload_via_ftp(data: bytes, filename: str) -> str:
+    """FTPでサーバーにアップロードし、公開URLを返す"""
+    remote_dir = SSH_REMOTE_PATH.rstrip('/')
+    ftp = ftplib.FTP()
     try:
-        transport.connect(username=SSH_USER, password=SSH_PASSWORD)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        remote_path = f"{SSH_REMOTE_PATH.rstrip('/')}/{filename}"
-        sftp.putfo(io.BytesIO(data), remote_path)
-        sftp.close()
+        ftp.connect(SSH_HOST, SSH_PORT, timeout=30)
+        ftp.login(SSH_USER, SSH_PASSWORD)
+        ftp.cwd(remote_dir)
+        ftp.storbinary(f"STOR {filename}", io.BytesIO(data))
     finally:
-        transport.close()
+        try:
+            ftp.quit()
+        except Exception:
+            ftp.close()
 
     public_url = f"{PUBLIC_URL_BASE.rstrip('/')}/{filename}"
     return public_url
@@ -195,6 +197,7 @@ def run_once() -> None:
             log.warning(f"  PDFファイルが見つかりません（スキップ）: {page_title}")
             continue
 
+        # 複数ファイルがある場合はすべて処理し、最後のURLを書き戻す
         last_url = ""
         all_ok = True
         for pdf_info in pdf_files:
@@ -204,11 +207,11 @@ def run_once() -> None:
                 pdf_data = download_file(pdf_info["url"])
 
                 log.info(f"  サーバーへアップロード中: {SSH_HOST} → {SSH_REMOTE_PATH}/{filename}")
-                last_url = upload_via_sftp(pdf_data, filename)
+                last_url = upload_via_ftp(pdf_data, filename)
                 log.info(f"  アップロード完了: {last_url}")
 
             except Exception as exc:
-                log.error(f"  エラー（{filename}）: {exc}")
+                log.error(f"  ❌ エラー（{filename}）: {exc}")
                 all_ok = False
 
         status = "同期済み" if all_ok else "エラー"
@@ -236,7 +239,7 @@ def sync_loop() -> None:
     log.info("=" * 60)
     log.info("カタログ自動同期サービスを開始しました")
     log.info(f"  Notion DB : {NOTION_DB_ID}")
-    log.info(f"  SSH HOST  : {SSH_HOST}:{SSH_PORT}")
+    log.info(f"  FTP HOST  : {SSH_HOST}:{SSH_PORT}")
     log.info(f"  リモートパス: {SSH_REMOTE_PATH}")
     log.info(f"  公開URLベース: {PUBLIC_URL_BASE}")
     log.info(f"  ポーリング間隔: {POLL_INTERVAL} 秒")
@@ -248,7 +251,7 @@ def sync_loop() -> None:
         except Exception as exc:
             log.error(f"予期しないエラーが発生しました: {exc}", exc_info=True)
 
-        log.info(f"{POLL_INTERVAL} 秒後に再チェックします...")
+        log.info(f"{POLL_INTERVAL} 秒後に再チェックします...\n")
         time.sleep(POLL_INTERVAL)
 
 
