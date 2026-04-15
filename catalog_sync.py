@@ -76,9 +76,9 @@ NOTION_HEADERS = {
 # ---------------------------------------------------------------------------
 
 def get_pending_pages() -> list[dict]:
-    """「同期ステータス」が空 or「未同期」のページを取得する"""
+    """「同期ステータス」が空 or「未同期」のページを取得する（ページネーション対応）"""
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
-    body = {
+    body: dict = {
         "filter": {
             "or": [
                 {
@@ -92,9 +92,16 @@ def get_pending_pages() -> list[dict]:
             ]
         }
     }
-    resp = requests.post(url, headers=NOTION_HEADERS, json=body, timeout=30)
-    resp.raise_for_status()
-    return resp.json().get("results", [])
+    all_pages: list[dict] = []
+    while True:
+        resp = requests.post(url, headers=NOTION_HEADERS, json=body, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        all_pages.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        body["start_cursor"] = data["next_cursor"]
+    return all_pages
 
 
 def extract_pdf_files(page: dict) -> list[dict]:
